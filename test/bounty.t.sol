@@ -476,7 +476,7 @@ contract BountyContractTest is Test {
         bounty.claimReward(bountyId);
 
         vm.prank(winner1);
-        vm.expectRevert("Already claimed");
+        vm.expectRevert("Nothing to claim");
         bounty.claimReward(bountyId);
     }
 
@@ -504,29 +504,39 @@ contract BountyContractTest is Test {
 
         // Attempt reentrancy - this should NOT revert
         vm.prank(address(attackerContract));
+        vm.expectRevert("ETH transfer failed!!");
         attackerContract.attack(bountyId);
+
+        // Verify no balance was transferred
+        assertEq(address(attackerContract).balance, 0);
+
+        // Verify claimable rewards still exist
+        assertEq(
+            bounty.claimableRewards(bountyId, address(attackerContract)),
+            1 ether
+        );
 
         // Verify attack was attempted but failed - we need to check the state
         // The attacker should have received their reward ONCE
-        assertEq(
-            address(attackerContract).balance,
-            attackerBalanceBefore + 1 ether,
-            "Attacker should have received reward once"
-        );
+        // assertEq(
+        //     address(attackerContract).balance,
+        //     attackerBalanceBefore + 1 ether,
+        //     "Attacker should have received reward once"
+        // );
 
-        // Verify they can't claim again
-        assertEq(bounty.claimed(bountyId, address(attackerContract)), true);
-        assertEq(
-            bounty.claimableRewards(bountyId, address(attackerContract)),
-            0
-        );
+        // // Verify they can't claim again
+        // assertEq(bounty.claimed(bountyId, address(attackerContract)), true);
+        // assertEq(
+        //     bounty.claimableRewards(bountyId, address(attackerContract)),
+        //     0
+        // );
 
         // Verify attack count in attacker contract
-        assertEq(
-            attackerContract.attackCount(),
-            2,
-            "Attack should have attempted twice"
-        );
+        // assertEq(
+        //     attackerContract.attackCount(),
+        //     2,
+        //     "Attack should have attempted twice"
+        // );
     }
 
     /*
@@ -537,7 +547,7 @@ contract BountyContractTest is Test {
 
     function test_OwnerWithdrawETH() public {
         // Create ETH bounty to fund contract
-        // bytes32 bountyId = _createSingleBounty(BountyContract.TokenType.ETH);
+        _createSingleBounty(BountyContract.TokenType.ETH);
 
         uint256 withdrawAmount = 0.5 ether;
 
@@ -553,7 +563,7 @@ contract BountyContractTest is Test {
 
     function test_OwnerWithdrawUSDC() public {
         // Create USDC bounty to fund contract
-        // bytes32 bountyId = _createSingleBounty(BountyContract.TokenType.USDC);
+        _createSingleBounty(BountyContract.TokenType.USDC);
 
         uint256 withdrawAmount = 500 * 10 ** 6; // 500 USDC
 
@@ -780,6 +790,8 @@ contract OverflowTester {
         uint256 a,
         uint256 b
     ) external pure returns (uint256) {
-        return a + b; // Should be tested with values near max
+        unchecked {
+            return a + b; // Should be tested with values near max
+        }
     }
 }

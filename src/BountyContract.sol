@@ -315,11 +315,12 @@ contract BountyContract is Ownable, ReentrancyGuard {
         Bounty storage bounty = bounties[bountyId];
 
         claimed[bountyId][msg.sender] = true;
+        claimableRewards[bountyId][msg.sender] = 0;
 
         if (bounty.tokenType == TokenType.ETH) {
             (bool sent, ) = payable(msg.sender).call{value: amount}("");
 
-            require(sent, "ETH transfer failed");
+            require(sent, "ETH transfer failed!!");
         } else {
             usdcToken.safeTransfer(msg.sender, amount);
         }
