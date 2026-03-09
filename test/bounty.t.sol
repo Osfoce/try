@@ -85,7 +85,7 @@ contract BountyContractTest is Test {
     |--------------------------------------------------------------------------
     */
 
-    function test_Constructor() public {
+    function test_Constructor() public view {
         assertEq(bounty.owner(), owner);
         assertEq(address(bounty.usdcToken()), address(usdc));
         assertEq(bounty.FEE_PERCENT(), 5);
@@ -290,7 +290,7 @@ contract BountyContractTest is Test {
         vm.prank(creator);
         bounty.assignMultipleWinners(bountyId, winners, new uint256[](0));
 
-        uint256 reward = bounty.getBountyInfo(bountyId).reward;
+        (, uint256 reward, , , , ) = bounty.getBountyInfo(bountyId);
         uint256 expectedShare = reward / 3;
         uint256 remainder = reward - (expectedShare * 3);
 
@@ -499,15 +499,33 @@ contract BountyContractTest is Test {
         // Fund the bounty contract with ETH
         vm.deal(address(bounty), 10 ether);
 
-        // Attempt reentrancy
+        // Record balance before
+        uint256 attackerBalanceBefore = address(attackerContract).balance;
+
+        // Attempt reentrancy - this should NOT revert
         vm.prank(address(attackerContract));
         attackerContract.attack(bountyId);
 
-        // Verify attack failed - attacker should only be able to claim once
+        // Verify attack was attempted but failed - we need to check the state
+        // The attacker should have received their reward ONCE
+        assertEq(
+            address(attackerContract).balance,
+            attackerBalanceBefore + 1 ether,
+            "Attacker should have received reward once"
+        );
+
+        // Verify they can't claim again
         assertEq(bounty.claimed(bountyId, address(attackerContract)), true);
         assertEq(
             bounty.claimableRewards(bountyId, address(attackerContract)),
             0
+        );
+
+        // Verify attack count in attacker contract
+        assertEq(
+            attackerContract.attackCount(),
+            2,
+            "Attack should have attempted twice"
         );
     }
 
@@ -519,7 +537,7 @@ contract BountyContractTest is Test {
 
     function test_OwnerWithdrawETH() public {
         // Create ETH bounty to fund contract
-        bytes32 bountyId = _createSingleBounty(BountyContract.TokenType.ETH);
+        // bytes32 bountyId = _createSingleBounty(BountyContract.TokenType.ETH);
 
         uint256 withdrawAmount = 0.5 ether;
 
@@ -535,7 +553,7 @@ contract BountyContractTest is Test {
 
     function test_OwnerWithdrawUSDC() public {
         // Create USDC bounty to fund contract
-        bytes32 bountyId = _createSingleBounty(BountyContract.TokenType.USDC);
+        // bytes32 bountyId = _createSingleBounty(BountyContract.TokenType.USDC);
 
         uint256 withdrawAmount = 500 * 10 ** 6; // 500 USDC
 
@@ -602,7 +620,8 @@ contract BountyContractTest is Test {
         bounty.assignMultipleWinners(bountyId, winners, percentages);
 
         // Should handle large numbers without overflow
-        uint256 reward = bounty.getBountyInfo(bountyId).reward;
+        // uint256 reward = bounty.getBountyInfo(bountyId).bounty.reward;
+        (, uint256 reward, , , , ) = bounty.getBountyInfo(bountyId);
         assertEq(bounty.claimableRewards(bountyId, winner1), reward / 2);
     }
 
