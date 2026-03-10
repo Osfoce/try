@@ -37,6 +37,15 @@ contract BountyContract is Ownable, ReentrancyGuard {
 
     /*
     |--------------------------------------------------------------------------
+    | FEE ACCOUNTING
+    |--------------------------------------------------------------------------
+    */
+
+    uint256 public totalEthFees; // ADDED
+    uint256 public totalUsdcFees; // ADDED
+
+    /*
+    |--------------------------------------------------------------------------
     | ENUMS
     |--------------------------------------------------------------------------
     */
@@ -101,6 +110,7 @@ contract BountyContract is Ownable, ReentrancyGuard {
     );
 
     event RewardsAssigned(bytes32 bountyId);
+    event FeeWithdrawn(address recipient, uint256 amount, string tokenType);
 
     event RewardClaimed(bytes32 bountyId, address winner, uint256 amount);
 
@@ -114,6 +124,7 @@ contract BountyContract is Ownable, ReentrancyGuard {
         address initialOwner,
         address _usdcTokenAddress
     ) Ownable(initialOwner) {
+        require(_usdcTokenAddress != address(0), "Invalid USDC address");
         usdcToken = IERC20(_usdcTokenAddress);
     }
 
@@ -133,9 +144,27 @@ contract BountyContract is Ownable, ReentrancyGuard {
         uint256 fee = (_reward * FEE_PERCENT) / 100;
         uint256 totalRequired = _reward + fee;
 
+        /*
+        ------------------------------------------------------
+        ETH BOUNTY
+        ------------------------------------------------------
+        */
+
         if (_tokenType == TokenType.ETH) {
             require(msg.value >= totalRequired, "Incorrect ETH amount");
-        } else {
+            totalEthFees += fee; // ADDED fee accounting
+
+            // refund extra ETH if user overpays
+            // if (msg.value > totalRequired) {
+            //     payable(msg.sender).transfer(msg.value - totalRequired);
+            // }
+        }
+        /*
+        ------------------------------------------------------
+        USDC BOUNTY
+        ------------------------------------------------------
+        */
+        else {
             require(msg.value == 0, "ETH not accepted");
 
             usdcToken.safeTransferFrom(
@@ -143,7 +172,15 @@ contract BountyContract is Ownable, ReentrancyGuard {
                 address(this),
                 totalRequired
             );
+
+            totalUsdcFees += fee; // ADDED fee accounting
         }
+
+        /*
+        ------------------------------------------------------
+        GENERATE BOUNTY ID
+        ------------------------------------------------------
+        */
 
         _bountyCounter.increment();
 
@@ -154,6 +191,12 @@ contract BountyContract is Ownable, ReentrancyGuard {
                 block.timestamp
             )
         );
+
+        /*
+        ------------------------------------------------------
+        STORE BOUNTY
+        ------------------------------------------------------
+        */
 
         bounties[bountyId] = Bounty({
             reward: _reward,
@@ -312,6 +355,8 @@ contract BountyContract is Ownable, ReentrancyGuard {
 
         require(!claimed[bountyId][msg.sender], "Already claimed");
 
+        require(msg.sender != address(0), "Invalid address");
+
         Bounty storage bounty = bounties[bountyId];
 
         claimed[bountyId][msg.sender] = true;
@@ -367,20 +412,33 @@ contract BountyContract is Ownable, ReentrancyGuard {
     */
 
     function withdraw(
-        uint256 amount,
         TokenType tokenType,
         address recipient
-    ) external onlyOwner nonReentrant {
+    ) external nonReentrant onlyOwner {
         require(recipient != address(0), "Invalid address");
 
         if (tokenType == TokenType.ETH) {
-            require(address(this).balance >= amount, "Insufficient ETH");
+            uint256 amount = totalEthFees;
+
+            require(amount > 0, "No fees");
+
+            totalEthFees = 0; // reset before transfer to prevent reentrancy
 
             (bool sent, ) = recipient.call{value: amount}("");
 
             require(sent, "Withdraw failed");
+
+            emit FeeWithdrawn(recipient, amount, "ETH");
         } else {
+            uint256 amount = totalUsdcFees;
+
+            require(amount > 0, "No fees");
+
+            totalUsdcFees = 0; // reset before transfer to prevent reentrancy
+
             usdcToken.safeTransfer(recipient, amount);
+
+            emit FeeWithdrawn(recipient, amount, "USDC");
         }
     }
 }
