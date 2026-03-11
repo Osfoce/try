@@ -73,7 +73,9 @@ contract BountyContract is Ownable, ReentrancyGuard {
         TokenType tokenType;
         PayoutType payoutType;
         address creator;
+        address[] winners;
         bool rewardsAssigned;
+        bool isClaimed;
     }
 
     /*
@@ -83,6 +85,7 @@ contract BountyContract is Ownable, ReentrancyGuard {
     */
 
     mapping(bytes32 => Bounty) private bounties;
+    bytes32[] public allBountyIds;
 
     /*
     |--------------------------------------------------------------------------
@@ -192,6 +195,8 @@ contract BountyContract is Ownable, ReentrancyGuard {
             )
         );
 
+        allBountyIds.push(bountyId);
+
         /*
         ------------------------------------------------------
         STORE BOUNTY
@@ -204,7 +209,9 @@ contract BountyContract is Ownable, ReentrancyGuard {
             tokenType: _tokenType,
             payoutType: _payoutType,
             creator: msg.sender,
-            rewardsAssigned: false
+            rewardsAssigned: false,
+            winners: new address[](0),
+            isClaimed: false
         });
 
         emit BountyCreated(
@@ -240,6 +247,7 @@ contract BountyContract is Ownable, ReentrancyGuard {
         require(winner != address(0), "Invalid winner");
 
         claimableRewards[bountyId][winner] = bounty.reward;
+        bounty.winners.push(winner);
 
         bounty.rewardsAssigned = true;
 
@@ -267,6 +275,7 @@ contract BountyContract is Ownable, ReentrancyGuard {
         require(!bounty.rewardsAssigned, "Already assigned");
 
         uint256 count = winners.length;
+        bounty.winners = winners;
 
         require(count >= 2, "Minimum 2 winners");
         require(count <= MAX_WINNERS, "Too many winners");
@@ -361,6 +370,28 @@ contract BountyContract is Ownable, ReentrancyGuard {
 
         claimed[bountyId][msg.sender] = true;
         claimableRewards[bountyId][msg.sender] = 0;
+        // bounty.rewardsAssigned = false;
+        if (bounty.payoutType == PayoutType.SINGLE) {
+            bounty.isClaimed = true;
+        }
+
+        if (
+            bounty.payoutType == PayoutType.MULTI_EQUAL ||
+            bounty.payoutType == PayoutType.MULTI_PERCENTAGE
+        ) {
+            bool allClaimed = true;
+
+            for (uint256 i = 0; i < bounty.winners.length; i++) {
+                if (!claimed[bountyId][bounty.winners[i]]) {
+                    allClaimed = false;
+                    break;
+                }
+            }
+
+            if (allClaimed) {
+                bounty.isClaimed = true;
+            }
+        }
 
         if (bounty.tokenType == TokenType.ETH) {
             (bool sent, ) = payable(msg.sender).call{value: amount}("");
@@ -386,9 +417,11 @@ contract BountyContract is Ownable, ReentrancyGuard {
         view
         returns (
             address creator,
+            address[] memory winners,
             uint256 reward,
             uint256 fee,
             bool rewardsAssigned,
+            bool isClaimed,
             TokenType tokenType,
             PayoutType payoutType
         )
@@ -397,9 +430,11 @@ contract BountyContract is Ownable, ReentrancyGuard {
 
         return (
             bounty.creator,
+            bounty.winners,
             bounty.reward,
             bounty.fee,
             bounty.rewardsAssigned,
+            bounty.isClaimed,
             bounty.tokenType,
             bounty.payoutType
         );
@@ -441,4 +476,17 @@ contract BountyContract is Ownable, ReentrancyGuard {
             emit FeeWithdrawn(recipient, amount, "USDC");
         }
     }
+
+    function availableBounties() external view returns (bytes32[] memory) {
+        return allBountyIds;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | FALLBACK
+    |--------------------------------------------------------------------------
+    */
+    // receive() external payable {
+    //     revert("Direct ETH not accepted");
+    // }
 }
