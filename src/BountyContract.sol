@@ -19,11 +19,13 @@ contract BountyContract is Ownable, ReentrancyGuard {
     /*
     |--------------------------------------------------------------------------
     | CONSTANTS
+    | using basis points
     |--------------------------------------------------------------------------
     */
 
-    uint256 public constant FEE_PERCENT = 5;
-    uint256 public constant MAX_WINNERS = 5;
+    uint256 public constant FEE_PERCENT = 500; // 5% fee in basis points
+    uint256 public constant BASIS_POINTS = 10000; // 100% in basis points
+    uint8 public constant MAX_WINNERS = 5;
 
     /*
     |--------------------------------------------------------------------------
@@ -70,12 +72,12 @@ contract BountyContract is Ownable, ReentrancyGuard {
     struct Bounty {
         uint256 reward;
         uint256 fee;
+        address creator;
         TokenType tokenType;
         PayoutType payoutType;
-        address creator;
-        address[] winners;
         bool rewardsAssigned;
         bool isClaimed;
+        address[] winners;
     }
 
     /*
@@ -84,8 +86,9 @@ contract BountyContract is Ownable, ReentrancyGuard {
     |--------------------------------------------------------------------------
     */
 
-    mapping(bytes32 => Bounty) private bounties;
-    bytes32[] public allBountyIds;
+    mapping(uint256 => Bounty) private bounties;
+    mapping(address => uint256[]) public creatorBounties;
+    uint256[] public allBountyIds;
 
     /*
     |--------------------------------------------------------------------------
@@ -93,9 +96,9 @@ contract BountyContract is Ownable, ReentrancyGuard {
     |--------------------------------------------------------------------------
     */
 
-    mapping(bytes32 => mapping(address => uint256)) public claimableRewards;
+    mapping(uint256 => mapping(address => uint256)) public claimableRewards;
 
-    mapping(bytes32 => mapping(address => bool)) public claimed;
+    mapping(uint256 => mapping(address => bool)) public claimed;
 
     /*
     |--------------------------------------------------------------------------
@@ -104,7 +107,7 @@ contract BountyContract is Ownable, ReentrancyGuard {
     */
 
     event BountyCreated(
-        bytes32 bountyId,
+        uint256 bountyId,
         address creator,
         uint256 reward,
         uint256 fee,
@@ -112,10 +115,10 @@ contract BountyContract is Ownable, ReentrancyGuard {
         PayoutType payoutType
     );
 
-    event RewardsAssigned(bytes32 bountyId);
+    event RewardsAssigned(uint256 bountyId, address[] winners);
     event FeeWithdrawn(address recipient, uint256 amount, string tokenType);
 
-    event RewardClaimed(bytes32 bountyId, address winner, uint256 amount);
+    event RewardClaimed(uint256 bountyId, address winner, uint256 amount);
 
     /*
     |--------------------------------------------------------------------------
@@ -141,10 +144,10 @@ contract BountyContract is Ownable, ReentrancyGuard {
         TokenType _tokenType,
         uint256 _reward,
         PayoutType _payoutType
-    ) external payable returns (bytes32) {
+    ) external payable nonReentrant returns (uint256) {
         require(_reward > 0, "Reward must be > 0");
 
-        uint256 fee = (_reward * FEE_PERCENT) / 100;
+        uint256 fee = (_reward * FEE_PERCENT) / BASIS_POINTS;
         uint256 totalRequired = _reward + fee;
 
         /*
@@ -156,11 +159,13 @@ contract BountyContract is Ownable, ReentrancyGuard {
         if (_tokenType == TokenType.ETH) {
             require(msg.value >= totalRequired, "Incorrect ETH amount");
             totalEthFees += fee; // ADDED fee accounting
+            uint256 excess = msg.value - totalRequired;
 
             // refund extra ETH if user overpays
-            // if (msg.value > totalRequired) {
-            //     payable(msg.sender).transfer(msg.value - totalRequired);
-            // }
+            if (msg.value > totalRequired) {
+                (bool success, ) = payable(msg.sender).call{value: excess}("");
+                require(success, "Refund failed");
+            }
         }
         /*
         ------------------------------------------------------
@@ -187,15 +192,10 @@ contract BountyContract is Ownable, ReentrancyGuard {
 
         _bountyCounter.increment();
 
-        bytes32 bountyId = keccak256(
-            abi.encodePacked(
-                _bountyCounter.current(),
-                msg.sender,
-                block.timestamp
-            )
-        );
+        uint256 bountyId = _bountyCounter.current();
 
         allBountyIds.push(bountyId);
+        creatorBounties[msg.sender].push(bountyId);
 
         /*
         ------------------------------------------------------
@@ -232,7 +232,7 @@ contract BountyContract is Ownable, ReentrancyGuard {
     |--------------------------------------------------------------------------
     */
 
-    function assignSingleWinner(bytes32 bountyId, address winner) external {
+    function assignSingleWinner(uint256 bountyId, address winner) external {
         Bounty storage bounty = bounties[bountyId];
 
         require(
@@ -245,13 +245,14 @@ contract BountyContract is Ownable, ReentrancyGuard {
         require(bounty.payoutType == PayoutType.SINGLE, "Invalid payout type");
 
         require(winner != address(0), "Invalid winner");
+        require(winner != bounty.creator, "creator cannot be the winner");
 
         claimableRewards[bountyId][winner] = bounty.reward;
         bounty.winners.push(winner);
 
         bounty.rewardsAssigned = true;
 
-        emit RewardsAssigned(bountyId);
+        emit RewardsAssigned(bountyId, bounty.winners);
     }
 
     /*
@@ -261,7 +262,7 @@ contract BountyContract is Ownable, ReentrancyGuard {
     */
 
     function assignMultipleWinners(
-        bytes32 bountyId,
+        uint256 bountyId,
         address[] calldata winners,
         uint256[] calldata percentages
     ) external {
@@ -286,11 +287,25 @@ contract BountyContract is Ownable, ReentrancyGuard {
         |--------------------------------------------------------------------------
         */
 
-        for (uint256 i = 0; i < count; i++) {
-            require(winners[i] != address(0), "Invalid winner");
+        address[5] memory seen;
 
-            for (uint256 j = i + 1; j < count; j++) {
-                require(winners[i] != winners[j], "Duplicate winner");
+        for (uint256 i; i < count; ) {
+            address winner = winners[i];
+
+            require(winner != address(0), "Invalid winner");
+            require(winner != bounty.creator, "Creator cannot win");
+
+            for (uint256 j; j < i; ) {
+                require(seen[j] != winner, "Duplicate winner");
+                unchecked {
+                    ++j;
+                }
+            }
+
+            seen[i] = winner;
+
+            unchecked {
+                ++i;
             }
         }
 
@@ -306,9 +321,15 @@ contract BountyContract is Ownable, ReentrancyGuard {
         if (bounty.payoutType == PayoutType.MULTI_EQUAL) {
             uint256 share = reward / count;
 
-            for (uint256 i = 0; i < count; i++) {
-                claimableRewards[bountyId][winners[i]] = share;
+            for (uint256 i = 0; i < count; ) {
+                address winner = winners[i];
+
+                claimableRewards[bountyId][winner] = share;
                 distributed += share;
+
+                unchecked {
+                    ++i;
+                }
             }
 
             claimableRewards[bountyId][winners[count - 1]] +=
@@ -325,18 +346,26 @@ contract BountyContract is Ownable, ReentrancyGuard {
 
             uint256 totalPercent;
 
-            for (uint256 i = 0; i < count; i++) {
+            for (uint256 i = 0; i < count; ) {
                 totalPercent += percentages[i];
+
+                unchecked {
+                    ++i;
+                }
             }
 
             require(totalPercent == 100, "Percent must equal 100");
 
-            for (uint256 i = 0; i < count; i++) {
+            for (uint256 i = 0; i < count; ) {
                 uint256 payout = (reward * percentages[i]) / 100;
 
                 claimableRewards[bountyId][winners[i]] = payout;
 
                 distributed += payout;
+
+                unchecked {
+                    ++i;
+                }
             }
 
             claimableRewards[bountyId][winners[count - 1]] +=
@@ -348,7 +377,7 @@ contract BountyContract is Ownable, ReentrancyGuard {
 
         bounty.rewardsAssigned = true;
 
-        emit RewardsAssigned(bountyId);
+        emit RewardsAssigned(bountyId, bounty.winners);
     }
 
     /*
@@ -357,7 +386,7 @@ contract BountyContract is Ownable, ReentrancyGuard {
     |--------------------------------------------------------------------------
     */
 
-    function claimReward(bytes32 bountyId) external nonReentrant {
+    function claimReward(uint256 bountyId) external nonReentrant {
         uint256 amount = claimableRewards[bountyId][msg.sender];
 
         require(amount > 0, "Nothing to claim");
@@ -411,7 +440,7 @@ contract BountyContract is Ownable, ReentrancyGuard {
     */
 
     function getBountyInfo(
-        bytes32 bountyId
+        uint256 bountyId
     )
         external
         view
@@ -477,8 +506,14 @@ contract BountyContract is Ownable, ReentrancyGuard {
         }
     }
 
-    function availableBounties() external view returns (bytes32[] memory) {
+    function availableBounties() external view returns (uint256[] memory) {
         return allBountyIds;
+    }
+
+    function bountiesByCreator(
+        address creator
+    ) external view returns (uint256[] memory) {
+        return creatorBounties[creator];
     }
 
     /*
